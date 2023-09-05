@@ -1,0 +1,267 @@
+---
+title: "ra10"
+output: pdf_document
+date: "2023-08-29"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## create table
+
+```{r}
+#install.packages("pacman")
+pacman::p_load(haven,
+               tidyverse, 
+               DT,
+               estimatr,
+               fixest,
+               purrr
+               )
+```
+
+## read rowdata
+
+```{r}
+data <- read_dta("smallmo.dta")
+```
+
+## filtering data
+
+```{r}
+data_described <- data %>%
+#    filter(
+#      (survey <= 2010 & clsize_snv >= 10) | (survey >= 2011 & clsize_snv >= 15),
+#           enrol_sch_snv <= 160) %>%
+  select(female,
+         immigrants_broad,
+         dad_midedu, 
+         mom_employed,
+         answers_math_pct,
+         answers_ital_pct,
+         clsize_snv,
+         our_CHEAT_math,
+         our_CHEAT_ital,
+         enrol_sch_snv,
+         grade,
+         schoolid,
+         plessoid,
+         classid,
+         south,
+         survey
+         )
+```
+
+## table 1
+
+```{r}
+table1_area <- data_described %>%
+  summarise(
+    across(.cols = female:enrol_sch_snv, 
+           list(mean = ~mean(.x, na.rm = TRUE), sd = ~sd(.x, na.rm = TRUE))),
+    .by = c("grade","south")
+  )
+
+table1_total <- data_described %>%
+  summarise(
+    across(.cols = female:enrol_sch_snv,
+           list(mean = ~mean(.x, na.rm = TRUE), sd = ~sd(.x, na.rm = TRUE))),
+    .by = c("grade")
+  ) %>%
+  mutate( south = 2)
+
+table1_bind <- bind_rows(table1_total, table1_area) %>%
+          select(south, everything()) %>% 
+          t() 
+
+row_names_table1 <- rownames(table1_bind)
+
+table1 <- as.tibble(table1_bind) %>% 
+          mutate(row_names = row_names_table1, .before = V1) %>% 
+          select(variables = row_names,
+                 Italy_2 = V2,
+                 `North/Center_2` = V5,
+                 South_2 = V6,
+                 Italy_5 = V1,
+                 `North/Center_5` = V3,
+                 South_5 = V4,
+                 ) %>% 
+          filter(!(variables %in% c("south", "grade")))
+
+#table1 %>% knitr::kable()
+datatable(table1)
+
+```
+
+※femaleからmom_employedまでは回答なしを考慮していないので若干誤差がでている。
+
+## OLS table2
+
+```{r}
+#olsのfunctionを定義 
+ols_function <- function(outcome, data_use){
+  formula_ols <- paste0( outcome, "  ~ clsize_snv  +  female + m_female + immigrants_broad + m_origin + dad_lowedu + dad_midedu + dad_highedu + mom_employed + m_mom_occ + mom_unemp + mom_housew + mom_employed + factor(region) + students + students2 + factor(survey) + factor(grade) + enrol_ins_snv" ) %>% 
+    as.formula()
+
+  
+  ols <- data_use %>% 
+#    rename(y = outcome) %>% 
+    feols(fml = formula_ols,
+                    data = .,
+                    cluster = "clu")
+  
+  return(ols)
+    
+}
+#ivのfunction定義 outcome とdataを指定
+iv_function <- function(outcome, data_use){
+  formula_iv <- paste0( outcome," ~ female + m_female + immigrants_broad + m_origin + dad_lowedu + dad_midedu + dad_highedu + mom_employed + m_mom_occ + mom_unemp + mom_housew + mom_employed + factor(region) + students + students2 + enrol_ins_snv |survey + grade| clsize_snv ~ clsize_hat" ) %>% 
+    as.formula()
+
+  iv <- data_use %>% 
+#    rename(y = outcome) %>% 
+    feols(fml = formula_iv,
+                    data = .,
+                    cluster = "clu")
+  
+  return(iv)
+    
+}
+
+```
+
+```{r}
+data_nc <- data %>% 
+  filter(south == 0)
+
+data_south <- data %>%
+  filter(south == 1)
+
+outcome_vec <- c("answers_math_std",
+                 "answers_ital_std",
+                 "our_CHEAT_math",
+                 "our_CHEAT_ital"
+                 )
+data_vec <- c(2, 1, 0) 
+## != で区別
+## 2; Total, 1; North/Center, 0; South
+result_box_ols <- list()
+
+for(i in outcome_vec){
+  for (j in 2:0){
+    ## dataをfiltering
+    data_j <- data %>%
+      filter(south != j)
+    ## regression
+    ols_ <- ols_function(outcome = i, 
+                 data_use = data_j)
+    result_box_ols[[length(result_box_ols) + 1]] <- ols_
+  }
+}
+
+etable(result_box_ols)
+```
+## iv
+```{r}
+result_box_iv <- list()
+
+for(i in outcome_vec){
+  for (j in 2:0){
+    ## dataをfiltering
+    data_j <- data %>%
+      filter(south != j)
+    ## regression
+    iv_ <- iv_function(outcome = i, 
+                 data_use = data_j)
+    result_box_iv[[length(result_box_iv) + 1]] <- iv_
+  }
+}
+
+etable(result_box_iv)
+```
+## Table 7
+```{r}
+#math
+tsls_function_math <- function(data_use){
+  formula_tsls_math <- paste0( " answers_math_std ~ female + d + m_female + immigrants_broad + m_origin + dad_lowedu + dad_midedu + dad_highedu + mom_employed + m_mom_occ + mom_unemp + mom_housew + students : factor(segment) + mom_employed + factor(region) + students + students2 + enrol_ins_snv |survey + grade + segment | clsize_snv + our_CHEAT_math ~ clsize_hat + sampled_math" ) %>% 
+    as.formula()
+  
+  tsls_math <- data_use %>% 
+#    rename(y = outcome) %>% 
+    feols(fml = formula_tsls_math,
+                    data = .,
+                    cluster = "clu")
+  
+  return(tsls_math)
+    
+}
+
+# Italy
+tsls_function_ital <- function(data_use){
+  formula_tsls_ital <- paste0( " answers_ital_std ~ female + d + m_female + immigrants_broad + m_origin + dad_lowedu + dad_midedu + dad_highedu + mom_employed + m_mom_occ + mom_unemp + mom_housew + students : factor(segment) +  mom_employed + factor(region) + students + students2 + enrol_ins_snv |survey + grade + segment | clsize_snv + our_CHEAT_ital ~ clsize_hat + sampled_ital" ) %>% 
+    as.formula()
+  
+  tsls_ital <- data_use %>% 
+#    rename(y = outcome) %>% 
+    feols(fml = formula_tsls_ital,
+                    data = .,
+                    cluster = "clu")
+  
+  return(tsls_ital)
+    
+}
+
+
+```
+
+```{r}
+# ひとつ前のセクションの中身を実行
+result_box_tsls_math <- list()
+
+for (j in 2:0){
+  ## dataをfiltering
+  data_j <- data %>%
+    filter(south != j)
+  ## regression
+  tsls_math <- tsls_function_math( data_use = data_j)
+  result_box_tsls_math[[length(result_box_tsls_math) + 1]] <- tsls_math
+}
+
+etable(result_box_tsls_math)
+
+
+result_box_tsls_ital <- list()
+for (j in 2:0){
+  ## dataをfiltering
+  data_j <- data %>%
+    filter(south != j)
+  ## regression
+  tsls_ital <- tsls_function_ital( data_use = data_j)
+  result_box_tsls_ital[[length(result_box_tsls_ital) + 1]] <- tsls_ital
+}
+
+etable(result_box_tsls_ital)
+
+```
+
+## 第一段階目
+etableは第一段階目の回帰表を出す。
+fitstatはf値を出します。
+### 数学
+```{r}
+etable(result_box_tsls_math,
+       stage = 1) 
+fitstat(result_box_tsls_math[[1]], "ivF")
+
+```
+
+### 国語
+```{r}
+etable(result_box_tsls_ital, 
+       stage = 1)
+fitstat(result_box_tsls_ital[[1]], "ivF")
+
+
+```
+
